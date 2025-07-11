@@ -25,6 +25,7 @@ import TrackPlayer, {
 import { setupPlayer, addTracks } from './src/services/trackPlayerServices';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/FontAwesome';
+import { PermissionsAndroid } from 'react-native';
 
 // Constants
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -40,6 +41,20 @@ const formatTime = (seconds) => {
   const remainingSeconds = Math.floor(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 };
+
+async function requestStoragePermission() {
+  const granted = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
+    {
+      title: 'Permiso para acceder a tu música',
+      message: 'Necesitamos acceder al almacenamiento para encontrar archivos MP3.',
+      buttonNeutral: 'Preguntar después',
+      buttonNegative: 'Cancelar',
+      buttonPositive: 'Aceptar',
+    },
+  );
+  return granted === PermissionsAndroid.RESULTS.GRANTED;
+}
 
 // Custom Hooks
 const usePlayerGesture = (playerPosition, onExpandedChange) => {
@@ -58,15 +73,15 @@ const usePlayerGesture = (playerPosition, onExpandedChange) => {
 
   const shouldExpand = useCallback((currentValue, velocity, distance) => {
     const midPoint = (EXPANDED_HEIGHT - COLLAPSED_HEIGHT) / 2;
-    
+
     if (Math.abs(velocity) > VELOCITY_THRESHOLD) {
       return velocity < 0;
     }
-    
+
     if (Math.abs(distance) > GESTURE_THRESHOLD) {
       return distance < 0;
     }
-    
+
     return currentValue < midPoint;
   }, []);
 
@@ -76,37 +91,37 @@ const usePlayerGesture = (playerPosition, onExpandedChange) => {
       const hasMinMovement = Math.abs(gestureState.dy) > 5;
       return isVertical && hasMinMovement;
     },
-    
+
     onPanResponderGrant: () => {
       playerPosition.stopAnimation();
       gestureStartPosition.current = playerPosition._value;
       setIsDragging(true);
     },
-    
+
     onPanResponderMove: (_, gestureState) => {
       const newPosition = gestureStartPosition.current + gestureState.dy;
       const minPosition = 0;
       const maxPosition = EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
-      
+
       let boundedPosition = Math.max(minPosition, Math.min(maxPosition, newPosition));
-      
+
       // Bounce effect
       if (newPosition < minPosition) {
         boundedPosition = minPosition - (minPosition - newPosition) * 0.3;
       } else if (newPosition > maxPosition) {
         boundedPosition = maxPosition + (newPosition - maxPosition) * 0.3;
       }
-      
+
       playerPosition.setValue(boundedPosition);
     },
-    
+
     onPanResponderRelease: (_, gestureState) => {
       setIsDragging(false);
-      
+
       const currentValue = playerPosition._value;
       const expand = shouldExpand(currentValue, gestureState.vy, gestureState.dy);
       const targetPosition = expand ? 0 : EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
-      
+
       animateToPosition(targetPosition, gestureState.vy, () => {
         onExpandedChange(expand);
       });
@@ -286,7 +301,7 @@ const EmptyState = memo(({ searchQuery }) => (
 
 const NowPlayingCard = memo(({ track, progress }) => {
   if (!track) return null;
-  
+
   return (
     <View style={styles.nowPlayingCard}>
       <View style={styles.nowPlayingAlbumImage}>
@@ -323,7 +338,7 @@ const NowPlayingCard = memo(({ track, progress }) => {
 
 const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, playerState }) => {
   if (!track) return null;
-  
+
   return (
     <SafeAreaView style={styles.expandedContainer}>
       <TouchableOpacity onPress={onCollapse} style={styles.collapseButton}>
@@ -386,14 +401,14 @@ const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, play
 const Playlist = memo(() => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
-  
+
   const { queue, currentTrackInfo, isLoading } = usePlaylist();
   const playerState = usePlaybackState();
   const progress = useProgress();
 
   const initialY = EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
   const playerPosition = useRef(new Animated.Value(initialY)).current;
-  
+
   const { panResponder, isDragging, animateToPosition } = usePlayerGesture(
     playerPosition,
     setIsPlayerExpanded
@@ -554,7 +569,9 @@ const App = memo(() => {
         const isSetup = await setupPlayer();
         if (isSetup) {
           const queue = await TrackPlayer.getQueue();
-          if (queue.length === 0) await addTracks();
+          if (queue.length === 0) {
+            await addTracks();
+          }
         }
         setIsReady(true);
       } catch (err) {
@@ -564,6 +581,19 @@ const App = memo(() => {
       }
     };
     init();
+  }, []);
+
+  useEffect(() => {
+    const requestPermission = async () => {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        Alert.alert('Permiso necesario', 'La app necesita acceso al almacenamiento.');
+      }
+    };
+
+    requestPermission();
   }, []);
 
   const handleRetry = useCallback(() => {

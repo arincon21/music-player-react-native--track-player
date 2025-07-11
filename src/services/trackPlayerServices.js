@@ -4,8 +4,8 @@ import TrackPlayer, {
   RepeatMode,
   Event,
 } from 'react-native-track-player';
+import RNFS from 'react-native-fs';
 
-// Configuración del reproductor
 const PLAYER_CONFIG = {
   maxCacheSize: 1024 * 10, // 10MB
   iosCategory: 'playback',
@@ -13,7 +13,6 @@ const PLAYER_CONFIG = {
   updateInterval: 1000, // 1 segundo
 };
 
-// Configuración de capacidades
 const CAPABILITIES = [
   Capability.Play,
   Capability.Pause,
@@ -30,53 +29,50 @@ const COMPACT_CAPABILITIES = [
   Capability.SkipToPrevious,
 ];
 
-// Datos de las pistas
-const TRACK_DATA = [
-  {
-    id: '1',
-    url: require('../../assets/fluidity-100-ig-edit-4558.mp3'),
-    title: "Don't Give Up",
-    artist: 'Andy & Lucas',
-    duration: 60,
-    artwork: require('../../assets/img/portada.jpg'),
-  },
-  {
-    id: '2',
-    url: require('../../assets/penguinmusic-modern-chillout-future-calm-12641.mp3'),
-    title: 'Lost My Way',
-    artist: 'David',
-    duration: 66,
-    artwork: require('../../assets/img/portada1.jpg'),
-  },
-  {
-    id: '3',
-    url: require('../../assets/powerful-beat-121791.mp3'),
-    title: 'A Werewolf Boy',
-    artist: 'Carole',
-    duration: 73,
-    artwork: require('../../assets/img/portada2.jpg'),
-  },
-  {
-    id: '4',
-    url: require('../../assets/FallOutBoy.mp3'),
-    title: 'Fluidity',
-    artist: 'tobylane',
-    duration: 73,
-    artwork: require('../../assets/img/portada.jpg'),
-  },
-];
+/**
+ * Escanea varias carpetas en busca de archivos .mp3
+ * @returns {Promise<Array>} Lista de pistas
+ */
+async function getAllMp3Tracks() {
+  const foldersToScan = [
+    `${RNFS.ExternalStorageDirectoryPath}/Download`,
+    `${RNFS.ExternalStorageDirectoryPath}/Music`,
+    `${RNFS.ExternalStorageDirectoryPath}/Documents`,
+  ];
+
+  let allMp3Files = [];
+
+  for (const path of foldersToScan) {
+    try {
+      const exists = await RNFS.exists(path);
+      if (!exists) continue;
+
+      const files = await RNFS.readDir(path);
+      const mp3Files = files.filter(file => file.isFile() && file.name.toLowerCase().endsWith('.mp3'));
+
+      allMp3Files = allMp3Files.concat(mp3Files);
+    } catch (error) {
+      console.warn(`Error accediendo a ${path}:`, error);
+    }
+  }
+
+  return allMp3Files.map((file, index) => ({
+    id: `${index}`,
+    url: `file://${file.path}`,
+    title: decodeURIComponent(file.name.replace('.mp3', '')),
+    artist: 'Desconocido',
+    duration: 0,
+    artwork: require('../../assets/img/portada.jpg'), // Puedes personalizar esto
+  }));
+}
 
 let isPlayerInitialized = false;
 let eventListenersRegistered = false;
 
-/**
- * Configura el reproductor de música
- * @returns {Promise<boolean>} - true si la configuración fue exitosa
- */
 export async function setupPlayer() {
   try {
     const isAlreadySetup = await TrackPlayer.isServiceRunning();
-    
+
     if (isAlreadySetup && isPlayerInitialized) {
       console.log("TrackPlayer ya está inicializado.");
       return true;
@@ -112,24 +108,25 @@ export async function setupPlayer() {
   }
 }
 
-/**
- * Añade las pistas a la cola de reproducción
- * @returns {Promise<boolean>} - true si las pistas se añadieron exitosamente
- */
 export async function addTracks() {
   try {
     const currentQueue = await TrackPlayer.getQueue();
-    
-    // Evitar duplicar pistas
     if (currentQueue.length > 0) {
       console.log("Las pistas ya están en la cola.");
       return true;
     }
 
-    await TrackPlayer.add(TRACK_DATA);
+    const dynamicTracks = await getAllMp3Tracks();
+
+    if (dynamicTracks.length === 0) {
+      console.warn('No se encontraron archivos MP3 en las carpetas comunes.');
+      return false;
+    }
+
+    await TrackPlayer.add(dynamicTracks);
     await TrackPlayer.setRepeatMode(RepeatMode.Queue);
-    
-    console.log(`Se añadieron ${TRACK_DATA.length} pistas a la cola.`);
+
+    console.log(`Se añadieron ${dynamicTracks.length} pistas a la cola.`);
     return true;
   } catch (error) {
     console.error('Error añadiendo pistas:', error);
@@ -137,15 +134,10 @@ export async function addTracks() {
   }
 }
 
-/**
- * Obtiene información de la pista actual
- * @returns {Promise<Object|null>} - Información de la pista o null
- */
 export async function getCurrentTrackInfo() {
   try {
     const currentIndex = await TrackPlayer.getCurrentTrack();
     if (currentIndex === null) return null;
-    
     return await TrackPlayer.getTrack(currentIndex);
   } catch (error) {
     console.error('Error obteniendo información de la pista actual:', error);
@@ -153,11 +145,6 @@ export async function getCurrentTrackInfo() {
   }
 }
 
-/**
- * Controla la reproducción (play/pause)
- * @param {boolean} shouldPlay - true para reproducir, false para pausar
- * @returns {Promise<boolean>} - true si la operación fue exitosa
- */
 export async function togglePlayback(shouldPlay) {
   try {
     if (shouldPlay) {
@@ -172,10 +159,6 @@ export async function togglePlayback(shouldPlay) {
   }
 }
 
-/**
- * Salta a la siguiente pista
- * @returns {Promise<boolean>} - true si la operación fue exitosa
- */
 export async function skipToNext() {
   try {
     await TrackPlayer.skipToNext();
@@ -186,10 +169,6 @@ export async function skipToNext() {
   }
 }
 
-/**
- * Salta a la pista anterior
- * @returns {Promise<boolean>} - true si la operación fue exitosa
- */
 export async function skipToPrevious() {
   try {
     await TrackPlayer.skipToPrevious();
@@ -200,99 +179,31 @@ export async function skipToPrevious() {
   }
 }
 
-/**
- * Registra los event listeners para el servicio de reproducción
- */
 export function registerPlaybackService() {
-  if (eventListenersRegistered) {
-    console.log("Event listeners ya están registrados.");
-    return;
-  }
+  if (eventListenersRegistered) return;
 
-  // Eventos de control remoto
-  TrackPlayer.addEventListener(Event.RemotePause, handleRemotePause);
-  TrackPlayer.addEventListener(Event.RemotePlay, handleRemotePlay);
-  TrackPlayer.addEventListener(Event.RemoteNext, handleRemoteNext);
-  TrackPlayer.addEventListener(Event.RemotePrevious, handleRemotePrevious);
-  TrackPlayer.addEventListener(Event.RemoteSeek, handleRemoteSeek);
-  TrackPlayer.addEventListener(Event.RemoteStop, handleRemoteStop);
-
-  // Eventos de reproducción
-  TrackPlayer.addEventListener(Event.PlaybackError, handlePlaybackError);
-  TrackPlayer.addEventListener(Event.PlaybackQueueEnded, handleQueueEnded);
-  TrackPlayer.addEventListener(Event.PlaybackTrackChanged, handleTrackChanged);
+  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
+  TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
+  TrackPlayer.addEventListener(Event.RemoteNext, () => TrackPlayer.skipToNext());
+  TrackPlayer.addEventListener(Event.RemotePrevious, () => TrackPlayer.skipToPrevious());
+  TrackPlayer.addEventListener(Event.RemoteSeek, (event) => TrackPlayer.seekTo(event.position));
+  TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.stop());
+  TrackPlayer.addEventListener(Event.PlaybackError, (event) => console.error('Error de reproducción:', event));
+  TrackPlayer.addEventListener(Event.PlaybackQueueEnded, () => console.log('Cola de reproducción terminada'));
+  TrackPlayer.addEventListener(Event.PlaybackTrackChanged, (event) => console.log('Pista cambiada:', event));
 
   eventListenersRegistered = true;
   console.log("Event listeners registrados exitosamente.");
 }
 
-/**
- * Limpia los event listeners
- */
 export function cleanupPlaybackService() {
   if (!eventListenersRegistered) return;
 
-  TrackPlayer.removeEventListener(Event.RemotePause, handleRemotePause);
-  TrackPlayer.removeEventListener(Event.RemotePlay, handleRemotePlay);
-  TrackPlayer.removeEventListener(Event.RemoteNext, handleRemoteNext);
-  TrackPlayer.removeEventListener(Event.RemotePrevious, handleRemotePrevious);
-  TrackPlayer.removeEventListener(Event.RemoteSeek, handleRemoteSeek);
-  TrackPlayer.removeEventListener(Event.RemoteStop, handleRemoteStop);
-  TrackPlayer.removeEventListener(Event.PlaybackError, handlePlaybackError);
-  TrackPlayer.removeEventListener(Event.PlaybackQueueEnded, handleQueueEnded);
-  TrackPlayer.removeEventListener(Event.PlaybackTrackChanged, handleTrackChanged);
-
+  // No es necesario quitar los listeners si ya está detenido, pero puedes hacerlo si deseas
   eventListenersRegistered = false;
   console.log("Event listeners limpiados.");
 }
 
-// Manejadores de eventos
-const handleRemotePause = () => {
-  console.log('Control remoto: Pausa');
-  TrackPlayer.pause();
-};
-
-const handleRemotePlay = () => {
-  console.log('Control remoto: Reproducir');
-  TrackPlayer.play();
-};
-
-const handleRemoteNext = () => {
-  console.log('Control remoto: Siguiente');
-  TrackPlayer.skipToNext();
-};
-
-const handleRemotePrevious = () => {
-  console.log('Control remoto: Anterior');
-  TrackPlayer.skipToPrevious();
-};
-
-const handleRemoteSeek = (event) => {
-  console.log('Control remoto: Buscar posición:', event.position);
-  TrackPlayer.seekTo(event.position);
-};
-
-const handleRemoteStop = () => {
-  console.log('Control remoto: Detener');
-  TrackPlayer.stop();
-};
-
-const handlePlaybackError = (event) => {
-  console.error('Error de reproducción:', event);
-  // Aquí podrías implementar lógica de recuperación
-};
-
-const handleQueueEnded = () => {
-  console.log('Cola de reproducción terminada');
-  // Aquí podrías implementar lógica para manejar el final de la cola
-};
-
-const handleTrackChanged = (event) => {
-  console.log('Pista cambiada:', event);
-  // Aquí podrías implementar lógica adicional cuando cambie la pista
-};
-
-// Función legacy para compatibilidad
 export async function playbackService() {
   registerPlaybackService();
 }
