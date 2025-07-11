@@ -66,8 +66,8 @@ function App() {
       <SafeAreaView style={styles.errorContainer}>
         <Icon name="exclamation-triangle" size={50} color="#f74716" />
         <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity 
-          style={styles.retryButton} 
+        <TouchableOpacity
+          style={styles.retryButton}
           onPress={() => { setError(null); setIsReady(false); }}
         >
           <Text style={styles.retryButtonText}>Reintentar</Text>
@@ -92,45 +92,130 @@ function Playlist() {
   const [currentTrackInfo, setCurrentTrackInfo] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const playerState = usePlaybackState();
   const progress = useProgress();
-  
+
   // Animated value for the player's position
-  const playerPosition = useRef(new Animated.Value(0)).current;
-  
-  // PanResponder for handling swipe gestures
+  const initialY = expandedHeight - collapsedHeight;
+  const playerPosition = useRef(new Animated.Value(initialY)).current;
+  const gestureStartPosition = useRef(initialY);
+  const lastGesturePosition = useRef(initialY);
+
+  // Función para animar suavemente a una posición específica
+  const animateToPosition = useCallback((toValue, velocity = 0, callback = null) => {
+    const springConfig = {
+      toValue,
+      useNativeDriver: false,
+      tension: 300,
+      friction: 30,
+      velocity: velocity * 2, // Amplifica la velocidad para mejor continuidad
+    };
+
+    Animated.spring(playerPosition, springConfig).start(callback);
+  }, [playerPosition]);
+
+  // Función para determinar si debe expandirse o colapsarse
+  const shouldExpand = useCallback((currentValue, velocity, distance) => {
+    const midPoint = (expandedHeight - collapsedHeight) / 2;
+    const minSwipeDistance = 30; // Distancia mínima para considerar el gesto
+    const velocityThreshold = 0.3; // Umbral de velocidad más bajo para mejor respuesta
+
+    // Si hay velocidad significativa, usarla como criterio principal
+    if (Math.abs(velocity) > velocityThreshold) {
+      return velocity < 0; // velocidad negativa = hacia arriba = expandir
+    }
+
+    // Si hay distancia significativa, usarla como criterio
+    if (Math.abs(distance) > minSwipeDistance) {
+      return distance < 0; // distancia negativa = hacia arriba = expandir
+    }
+
+    // Si no hay gesto significativo, usar la posición actual
+    return currentValue < midPoint;
+  }, []);
+
+  // PanResponder mejorado para gestos más naturales
   const panResponder = PanResponder.create({
-    onMoveShouldSetPanResponder: (evt, gestureState) => {
-      return Math.abs(gestureState.dy) > 10;
+    onMoveShouldSetPanResponder: (_, gestureState) => {
+      // Responde más rápido a movimientos verticales
+      const isVertical = Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
+      const hasMinMovement = Math.abs(gestureState.dy) > 5;
+      return isVertical && hasMinMovement;
     },
-    onPanResponderGrant: () => {
-      playerPosition.setOffset(playerPosition._value);
+    
+    onPanResponderGrant: (_, gestureState) => {
+      // Detiene cualquier animación en curso
+      playerPosition.stopAnimation();
+      
+      // Guarda la posición inicial del gesto
+      gestureStartPosition.current = playerPosition._value;
+      lastGesturePosition.current = playerPosition._value;
+      
+      setIsDragging(true);
     },
-    onPanResponderMove: (evt, gestureState) => {
-      // Limit the movement to valid bounds
-      const newValue = Math.max(
-        Math.min(gestureState.dy, 0), 
-        -(expandedHeight - collapsedHeight)
-      );
-      playerPosition.setValue(newValue);
+    
+    onPanResponderMove: (_, gestureState) => {
+      // Calcula la nueva posición basada en el gesto
+      const newPosition = gestureStartPosition.current + gestureState.dy;
+      
+      // Aplica límites con efecto de rebote suave
+      const minPosition = 0;
+      const maxPosition = expandedHeight - collapsedHeight;
+      
+      let boundedPosition;
+      
+      if (newPosition < minPosition) {
+        // Efecto de rebote en el límite superior (expandido)
+        const overshoot = Math.abs(newPosition - minPosition);
+        const dampedOvershoot = overshoot * 0.3; // Reduce el overshoot
+        boundedPosition = minPosition - dampedOvershoot;
+      } else if (newPosition > maxPosition) {
+        // Efecto de rebote en el límite inferior (colapsado)
+        const overshoot = newPosition - maxPosition;
+        const dampedOvershoot = overshoot * 0.3; // Reduce el overshoot
+        boundedPosition = maxPosition + dampedOvershoot;
+      } else {
+        boundedPosition = newPosition;
+      }
+      
+      // Aplica la nueva posición con interpolación suave
+      const smoothingFactor = 0.9;
+      const smoothedPosition = lastGesturePosition.current * (1 - smoothingFactor) + 
+                               boundedPosition * smoothingFactor;
+      
+      playerPosition.setValue(smoothedPosition);
+      lastGesturePosition.current = smoothedPosition;
     },
-    onPanResponderRelease: (evt, gestureState) => {
-      playerPosition.flattenOffset();
+    
+    onPanResponderRelease: (_, gestureState) => {
+      setIsDragging(false);
       
-      const threshold = -screenHeight * 0.3;
-      const shouldExpand = gestureState.dy < threshold || gestureState.vy < -0.5;
+      const currentValue = playerPosition._value;
+      const velocity = gestureState.vy;
+      const distance = gestureState.dy;
       
-      const toValue = shouldExpand ? -(expandedHeight - collapsedHeight) : 0;
+      // Determina el destino basado en la lógica mejorada
+      const expand = shouldExpand(currentValue, velocity, distance);
+      const targetPosition = expand ? 0 : expandedHeight - collapsedHeight;
       
-      Animated.spring(playerPosition, {
-        toValue,
-        useNativeDriver: false,
-        tension: 100,
-        friction: 8,
-      }).start();
+      // Anima hacia el destino con la velocidad del gesto
+      animateToPosition(targetPosition, velocity, () => {
+        setIsPlayerExpanded(expand);
+      });
+    },
+    
+    onPanResponderTerminate: () => {
+      // Maneja la terminación inesperada del gesto
+      setIsDragging(false);
+      const currentValue = playerPosition._value;
+      const midPoint = (expandedHeight - collapsedHeight) / 2;
+      const targetPosition = currentValue < midPoint ? 0 : expandedHeight - collapsedHeight;
       
-      setIsPlayerExpanded(shouldExpand);
+      animateToPosition(targetPosition, 0, () => {
+        setIsPlayerExpanded(currentValue < midPoint);
+      });
     },
   });
 
@@ -148,7 +233,7 @@ function Playlist() {
     try {
       setIsLoading(true);
       const [loadedQueue, currentIndex] = await Promise.all([
-        TrackPlayer.getQueue(), 
+        TrackPlayer.getQueue(),
         TrackPlayer.getCurrentTrack()
       ]);
       const trackInfo = currentIndex != null ? await TrackPlayer.getTrack(currentIndex) : null;
@@ -162,8 +247,8 @@ function Playlist() {
     }
   }, []);
 
-  useEffect(() => { 
-    loadPlaylist(); 
+  useEffect(() => {
+    loadPlaylist();
   }, [loadPlaylist]);
 
   useTrackPlayerEvents([Event.PlaybackTrackChanged], async (event) => {
@@ -174,7 +259,7 @@ function Playlist() {
   });
 
   const handleSearch = useCallback((text) => setSearchQuery(text), []);
-  
+
   const togglePlayback = useCallback(async () => {
     const state = await TrackPlayer.getState();
     if (state === State.Playing) {
@@ -183,7 +268,7 @@ function Playlist() {
       await TrackPlayer.play();
     }
   }, []);
-  
+
   const handleTrackSelect = useCallback(async (id) => {
     const index = queue.findIndex((track) => track.id === id);
     if (index !== -1) {
@@ -192,28 +277,24 @@ function Playlist() {
   }, [queue]);
 
   const collapsePlayer = useCallback(() => {
-    Animated.spring(playerPosition, {
-      toValue: 0,
-      useNativeDriver: false,
-      tension: 100,
-      friction: 8,
-    }).start();
-    setIsPlayerExpanded(false);
-  }, [playerPosition]);
+    animateToPosition(expandedHeight - collapsedHeight, 0, () => {
+      setIsPlayerExpanded(false);
+    });
+  }, [animateToPosition]);
 
   const renderItem = useCallback(({ item }) => (
-    <PlaylistItem 
-      item={item} 
-      isCurrent={currentTrackInfo?.id === item.id} 
-      onPress={() => handleTrackSelect(item.id)} 
+    <PlaylistItem
+      item={item}
+      isCurrent={currentTrackInfo?.id === item.id}
+      onPress={() => handleTrackSelect(item.id)}
       isPlaying={playerState === State.Playing}
     />
   ), [currentTrackInfo?.id, handleTrackSelect, playerState]);
 
   const getItemLayout = useCallback((data, index) => ({
-    length: 76, 
-    offset: 76 * index, 
-    index 
+    length: 76,
+    offset: 76 * index,
+    index
   }), []);
 
   if (isLoading) {
@@ -227,75 +308,95 @@ function Playlist() {
     );
   }
 
-  // Calculate opacity for different elements based on player position
+  // Interpolaciones mejoradas para transiciones más suaves
   const listOpacity = playerPosition.interpolate({
-    inputRange: [-(expandedHeight - collapsedHeight) * 0.5, 0],
+    inputRange: [0, (expandedHeight - collapsedHeight) * 0.3],
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
 
   const collapsedOpacity = playerPosition.interpolate({
-    inputRange: [-150, 0],
+    inputRange: [
+      (expandedHeight - collapsedHeight) * 0.4,
+      expandedHeight - collapsedHeight
+    ],
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
 
   const expandedOpacity = playerPosition.interpolate({
-    inputRange: [-(expandedHeight - collapsedHeight), -(expandedHeight - collapsedHeight) + 200],
+    inputRange: [0, (expandedHeight - collapsedHeight) * 0.4],
     outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  // Escala sutil para el botón de play durante el arrastre
+  const playButtonScale = playerPosition.interpolate({
+    inputRange: [0, expandedHeight - collapsedHeight],
+    outputRange: [1, 0.95],
     extrapolate: 'clamp',
   });
 
   return (
     <LinearGradient colors={['#363a42', '#091117']} style={styles.container}>
       <Header searchQuery={searchQuery} onSearch={handleSearch} />
-      
+
       <Animated.View style={[styles.mainContentList, { opacity: listOpacity }]}>
-        <FlatList 
-          data={filteredQueue} 
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()} 
-          showsVerticalScrollIndicator={false} 
-          renderItem={renderItem} 
-          ListEmptyComponent={<EmptyState searchQuery={searchQuery} />} 
-          initialNumToRender={10} 
-          getItemLayout={getItemLayout} 
+        <FlatList
+          data={filteredQueue}
+          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+          showsVerticalScrollIndicator={false}
+          renderItem={renderItem}
+          ListEmptyComponent={<EmptyState searchQuery={searchQuery} />}
+          initialNumToRender={10}
+          getItemLayout={getItemLayout}
+          scrollEnabled={!isDragging} // Desactiva el scroll durante el arrastre
         />
       </Animated.View>
 
-      <Animated.View 
+      <Animated.View
         style={[
-          styles.bottomControls, 
-          { 
-            transform: [{ translateY: playerPosition }] 
+          styles.bottomControls,
+          {
+            transform: [{ translateY: playerPosition }],
           }
         ]}
         {...panResponder.panHandlers}
       >
         <Animated.View style={[styles.expandedView, { opacity: expandedOpacity }]}>
-          <ExpandedPlayer 
-            track={currentTrackInfo} 
-            progress={progress} 
-            onCollapse={collapsePlayer} 
-            togglePlayback={togglePlayback} 
-            playerState={playerState} 
+          <ExpandedPlayer
+            track={currentTrackInfo}
+            progress={progress}
+            onCollapse={collapsePlayer}
+            togglePlayback={togglePlayback}
+            playerState={playerState}
           />
         </Animated.View>
-        
+
         <Animated.View style={[styles.collapsedView, { opacity: collapsedOpacity }]}>
           <NowPlayingCard track={currentTrackInfo} progress={progress} />
         </Animated.View>
-        
-        <TouchableOpacity 
-          style={styles.playButtonLarge} 
-          onPress={togglePlayback} 
-          activeOpacity={0.8}
+
+        <Animated.View
+          style={[
+            styles.playButtonLarge,
+            {
+              transform: [{ scale: playButtonScale }]
+            }
+          ]}
         >
-          <Icon 
-            name={playerState === State.Playing ? 'pause' : 'play'} 
-            size={24} 
-            color="#FFF" 
-          />
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.playButtonInner}
+            onPress={togglePlayback}
+            activeOpacity={0.8}
+          >
+            <Icon
+              name={playerState === State.Playing ? 'pause' : 'play'}
+              size={24}
+              color="#FFF"
+            />
+          </TouchableOpacity>
+        </Animated.View>
       </Animated.View>
     </LinearGradient>
   );
@@ -312,12 +413,12 @@ const Header = memo(({ searchQuery, onSearch }) => (
   <View style={styles.header}>
     <Text style={styles.headerTitle}>Mi Música</Text>
     <View style={styles.searchContainer}>
-      <TextInput 
-        value={searchQuery} 
-        onChangeText={onSearch} 
-        placeholder="Buscar música..." 
-        placeholderTextColor="#999" 
-        style={styles.searchInput} 
+      <TextInput
+        value={searchQuery}
+        onChangeText={onSearch}
+        placeholder="Buscar música..."
+        placeholderTextColor="#999"
+        style={styles.searchInput}
       />
       <Icon name="search" size={18} color="#999" style={styles.searchIcon} />
     </View>
@@ -329,10 +430,10 @@ const NowPlayingCard = memo(({ track, progress }) => {
   return (
     <View style={styles.nowPlayingCard}>
       <View style={styles.nowPlayingAlbumImage}>
-        <Image 
-          source={track.artwork} 
-          style={styles.nowPlayingAlbumArt} 
-          resizeMode="cover" 
+        <Image
+          source={track.artwork}
+          style={styles.nowPlayingAlbumArt}
+          resizeMode="cover"
         />
       </View>
       <View style={styles.nowPlayingContent}>
@@ -344,11 +445,11 @@ const NowPlayingCard = memo(({ track, progress }) => {
         </Text>
         <View style={styles.progressContainer}>
           <View style={styles.progressBar}>
-            <View 
+            <View
               style={[
-                styles.progressFill, 
+                styles.progressFill,
                 { width: `${(progress.position / progress.duration) * 100 || 0}%` }
-              ]} 
+              ]}
             />
           </View>
           <Text style={styles.timeText}>
@@ -361,16 +462,16 @@ const NowPlayingCard = memo(({ track, progress }) => {
 });
 
 const PlaylistItem = memo(({ item, isCurrent, onPress, isPlaying }) => (
-  <TouchableOpacity 
-    style={isCurrent ? styles.playlistItemContainerActive : styles.playlistItemContainer} 
-    activeOpacity={0.7} 
+  <TouchableOpacity
+    style={isCurrent ? styles.playlistItemContainerActive : styles.playlistItemContainer}
+    activeOpacity={0.7}
     onPress={() => onPress(item.id)}
   >
     <View style={styles.albumArt}>
-      <Image 
-        source={item.artwork} 
-        style={styles.albumArtImage} 
-        resizeMode="cover" 
+      <Image
+        source={item.artwork}
+        style={styles.albumArtImage}
+        resizeMode="cover"
       />
     </View>
     <View style={styles.trackInfo}>
@@ -401,15 +502,15 @@ const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, play
       <TouchableOpacity onPress={onCollapse} style={styles.collapseButton}>
         <Icon name="chevron-down" size={28} color="#9b9a97" />
       </TouchableOpacity>
-      
+
       <View style={styles.expandedArtWrapper}>
-        <Image 
-          source={track.artwork} 
-          style={styles.expandedAlbumArt} 
-          resizeMode="cover" 
+        <Image
+          source={track.artwork}
+          style={styles.expandedAlbumArt}
+          resizeMode="cover"
         />
       </View>
-      
+
       <View style={styles.expandedTrackDetails}>
         <Text style={styles.expandedTitle} numberOfLines={2}>
           {track.title}
@@ -418,14 +519,14 @@ const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, play
           {track.artist}
         </Text>
       </View>
-      
+
       <View style={styles.expandedProgressContainer}>
         <View style={styles.progressBar}>
-          <View 
+          <View
             style={[
-              styles.progressFill, 
+              styles.progressFill,
               { width: `${(progress.position / progress.duration) * 100 || 0}%` }
-            ]} 
+            ]}
           />
         </View>
         <View style={styles.expandedTimeWrapper}>
@@ -433,20 +534,20 @@ const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, play
           <Text style={styles.timeText}>{formatTime(progress.duration)}</Text>
         </View>
       </View>
-      
+
       <View style={styles.expandedControls}>
         <TouchableOpacity onPress={() => TrackPlayer.skipToPrevious()}>
           <Icon name="step-backward" size={32} color="#3e3f43" />
         </TouchableOpacity>
-        
+
         <TouchableOpacity style={styles.expandedPlayButton} onPress={togglePlayback}>
-          <Icon 
-            name={playerState === State.Playing ? 'pause' : 'play'} 
-            size={38} 
-            color="#FFF" 
+          <Icon
+            name={playerState === State.Playing ? 'pause' : 'play'}
+            size={38}
+            color="#FFF"
           />
         </TouchableOpacity>
-        
+
         <TouchableOpacity onPress={() => TrackPlayer.skipToNext()}>
           <Icon name="step-forward" size={32} color="#3e3f43" />
         </TouchableOpacity>
@@ -459,47 +560,47 @@ const AnimatedSoundWave = memo(({ isPlaying }) => {
   const bar1Height = useRef(new Animated.Value(12)).current;
   const bar2Height = useRef(new Animated.Value(20)).current;
   const bar3Height = useRef(new Animated.Value(16)).current;
-  
+
   useEffect(() => {
-    const createAnimation = (val, min, max) => 
+    const createAnimation = (val, min, max) =>
       Animated.loop(
         Animated.sequence([
-          Animated.timing(val, { 
-            toValue: max, 
-            duration: 300 + Math.random() * 200, 
-            useNativeDriver: false 
+          Animated.timing(val, {
+            toValue: max,
+            duration: 300 + Math.random() * 200,
+            useNativeDriver: false
           }),
-          Animated.timing(val, { 
-            toValue: min, 
-            duration: 300 + Math.random() * 200, 
-            useNativeDriver: false 
+          Animated.timing(val, {
+            toValue: min,
+            duration: 300 + Math.random() * 200,
+            useNativeDriver: false
           }),
         ])
       );
-      
+
     if (isPlaying) {
       const animations = [
         createAnimation(bar1Height, 8, 18),
         createAnimation(bar2Height, 12, 24),
         createAnimation(bar3Height, 10, 20)
       ];
-      
-      animations.forEach((anim, i) => 
+
+      animations.forEach((anim, i) =>
         setTimeout(() => anim.start(), i * 100)
       );
-      
+
       return () => animations.forEach(anim => anim.stop());
     } else {
-      [bar1Height, bar2Height, bar3Height].forEach((bar, i) => 
-        Animated.timing(bar, { 
-          toValue: [12, 20, 16][i], 
-          duration: 200, 
-          useNativeDriver: false 
+      [bar1Height, bar2Height, bar3Height].forEach((bar, i) =>
+        Animated.timing(bar, {
+          toValue: [12, 20, 16][i],
+          duration: 200,
+          useNativeDriver: false
         }).start()
       );
     }
   }, [isPlaying, bar1Height, bar2Height, bar3Height]);
-  
+
   return (
     <View style={styles.soundWave}>
       <Animated.View style={[styles.bar, { height: bar1Height }]} />
@@ -522,219 +623,219 @@ const EmptyState = memo(({ searchQuery }) => (
 ));
 
 const styles = StyleSheet.create({
-  appContainer: { 
-    flex: 1, 
-    backgroundColor: 'transparent' 
+  appContainer: {
+    flex: 1,
+    backgroundColor: 'transparent'
   },
-  loadingContainer: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    backgroundColor: '#1C1C1E' 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1C1C1E'
   },
-  loadingText: { 
-    color: '#FFD700', 
-    marginTop: 10, 
-    fontSize: 16 
+  loadingText: {
+    color: '#FFD700',
+    marginTop: 10,
+    fontSize: 16
   },
-  errorContainer: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    backgroundColor: '#1C1C1E', 
-    padding: 20 
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1C1C1E',
+    padding: 20
   },
-  errorText: { 
-    color: '#f74716', 
-    fontSize: 18, 
-    textAlign: 'center', 
-    marginVertical: 20 
+  errorText: {
+    color: '#f74716',
+    fontSize: 18,
+    textAlign: 'center',
+    marginVertical: 20
   },
-  retryButton: { 
-    backgroundColor: '#f74716', 
-    paddingHorizontal: 20, 
-    paddingVertical: 10, 
-    borderRadius: 8 
+  retryButton: {
+    backgroundColor: '#f74716',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8
   },
-  retryButtonText: { 
-    color: '#fff', 
-    fontSize: 16, 
-    fontWeight: 'bold' 
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold'
   },
-  container: { 
-    flex: 1, 
-    overflow: 'hidden' 
+  container: {
+    flex: 1,
+    overflow: 'hidden'
   },
-  header: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    paddingHorizontal: 15, 
-    paddingTop: 20, 
-    paddingBottom: 20 
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingTop: 20,
+    paddingBottom: 20
   },
-  headerTitle: { 
-    fontSize: 32, 
-    fontWeight: 'bold', 
-    color: '#FFFFFF' 
+  headerTitle: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#FFFFFF'
   },
-  searchContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#2c2c2e66', 
-    borderRadius: 8, 
-    paddingHorizontal: 15, 
-    paddingVertical: 8, 
-    minWidth: 200, 
-    height: 44 
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2c2c2e66',
+    borderRadius: 8,
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    minWidth: 200,
+    height: 44
   },
-  searchInput: { 
-    flex: 1, 
-    color: '#FFFFFF', 
-    fontSize: 16, 
-    paddingVertical: 0 
+  searchInput: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    paddingVertical: 0
   },
-  searchIcon: { 
-    marginLeft: 10 
+  searchIcon: {
+    marginLeft: 10
   },
-  mainContentList: { 
-    flex: 1, 
-    paddingHorizontal: 10 
+  mainContentList: {
+    flex: 1,
+    paddingHorizontal: 10
   },
-  nowPlayingCard: { 
-    flex: 1, 
-    flexDirection: 'row', 
-    alignItems: 'center' 
+  nowPlayingCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center'
   },
-  nowPlayingContent: { 
-    flex: 1, 
-    paddingHorizontal: 15, 
-    justifyContent: 'center' 
+  nowPlayingContent: {
+    flex: 1,
+    paddingHorizontal: 15,
+    justifyContent: 'center'
   },
-  nowPlayingAlbumArt: { 
-    width: '100%', 
-    height: '100%', 
-    backgroundColor: '#595959', 
-    borderRadius: 15 
+  nowPlayingAlbumArt: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#595959',
+    borderRadius: 15
   },
-  nowPlayingTitle: { 
-    fontSize: 18, 
-    fontWeight: 'bold', 
-    color: '#3e3f43', 
-    marginBottom: 4 
+  nowPlayingTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#3e3f43',
+    marginBottom: 4
   },
-  nowPlayingArtist: { 
-    fontSize: 14, 
-    color: '#9b9a97', 
-    marginBottom: 8 
+  nowPlayingArtist: {
+    fontSize: 14,
+    color: '#9b9a97',
+    marginBottom: 8
   },
-  progressContainer: { 
-    alignItems: 'center' 
+  progressContainer: {
+    alignItems: 'center'
   },
-  progressBar: { 
-    height: 4, 
-    backgroundColor: '#e0e0e0', 
-    borderRadius: 2, 
-    width: '100%', 
-    marginBottom: 4 
+  progressBar: {
+    height: 4,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 2,
+    width: '100%',
+    marginBottom: 4
   },
-  progressFill: { 
-    height: '100%', 
-    backgroundColor: '#f74716', 
-    borderRadius: 2 
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#f74716',
+    borderRadius: 2
   },
-  timeText: { 
-    fontSize: 12, 
-    color: '#9b9a97' 
+  timeText: {
+    fontSize: 12,
+    color: '#9b9a97'
   },
-  noResultsContainer: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    paddingVertical: 60 
+  noResultsContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60
   },
-  noResultsText: { 
-    fontSize: 18, 
-    fontWeight: '600', 
-    color: '#666', 
-    marginTop: 20 
+  noResultsText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 20
   },
-  noResultsSubtext: { 
-    fontSize: 14, 
-    color: '#999', 
-    marginTop: 8 
+  noResultsSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8
   },
-  playlistItemContainer: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    borderRadius: 10, 
-    padding: 10 
+  playlistItemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 10,
+    padding: 10
   },
-  playlistItemContainerActive: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#00000030', 
-    borderRadius: 10, 
-    padding: 10 
+  playlistItemContainerActive: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#00000030',
+    borderRadius: 10,
+    padding: 10
   },
-  albumArt: { 
-    width: 46, 
-    height: 46, 
-    borderRadius: 23, 
-    overflow: 'hidden', 
-    marginRight: 12, 
-    shadowColor: '#000', 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.3, 
-    shadowRadius: 4.65, 
-    elevation: 8 
+  albumArt: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    overflow: 'hidden',
+    marginRight: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8
   },
-  trackInfo: { 
-    flex: 1, 
-    justifyContent: 'center' 
+  trackInfo: {
+    flex: 1,
+    justifyContent: 'center'
   },
-  trackTitle: { 
-    fontSize: 16, 
-    fontWeight: '600', 
-    color: '#bfc2c1' 
+  trackTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#bfc2c1'
   },
-  trackArtist: { 
-    fontSize: 14, 
-    color: '#626c74' 
+  trackArtist: {
+    fontSize: 14,
+    color: '#626c74'
   },
-  trackDuration: { 
-    fontSize: 12, 
-    color: '#626c74' 
+  trackDuration: {
+    fontSize: 12,
+    color: '#626c74'
   },
-  currentTrackIndicator: { 
-    marginLeft: 12, 
-    minWidth: 40, 
-    alignItems: 'center' 
+  currentTrackIndicator: {
+    marginLeft: 12,
+    minWidth: 40,
+    alignItems: 'center'
   },
-  soundWave: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'center' 
+  soundWave: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
-  bar: { 
-    width: 3, 
-    backgroundColor: '#f74716', 
-    marginHorizontal: 1, 
-    borderRadius: 2 
+  bar: {
+    width: 3,
+    backgroundColor: '#f74716',
+    marginHorizontal: 1,
+    borderRadius: 2
   },
-  albumArtImage: { 
-    width: '100%', 
-    height: '100%', 
-    borderRadius: 23 
+  albumArtImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 23
   },
-  nowPlayingAlbumImage: { 
-    width: 70, 
-    height: 70, 
-    shadowColor: '#202020', 
-    shadowOffset: { width: 0, height: 4 }, 
-    shadowOpacity: 0.3, 
-    shadowRadius: 4.65, 
-    elevation: 8 
+  nowPlayingAlbumImage: {
+    width: 70,
+    height: 70,
+    shadowColor: '#202020',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8
   },
   bottomControls: {
     position: 'absolute',
@@ -743,7 +844,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 40,
     backgroundColor: '#fff',
     height: expandedHeight,
-    bottom: -(expandedHeight - collapsedHeight),
+    bottom: 0,
     left: 0,
     right: 0,
     zIndex: 100,
@@ -764,6 +865,13 @@ const styles = StyleSheet.create({
     right: 30,
     top: -30,
     zIndex: 101,
+  },
+  playButtonInner: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   collapsedView: {
     height: collapsedHeight,
