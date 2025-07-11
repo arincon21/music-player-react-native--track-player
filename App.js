@@ -26,208 +26,100 @@ import { setupPlayer, addTracks } from './src/services/trackPlayerServices';
 import LinearGradient from 'react-native-linear-gradient';
 import Icon from 'react-native-vector-icons/FontAwesome';
 
-const { height: screenHeight } = Dimensions.get('window');
-const collapsedHeight = 150;
-const expandedHeight = screenHeight;
+// Constants
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const COLLAPSED_HEIGHT = 150;
+const EXPANDED_HEIGHT = SCREEN_HEIGHT;
+const GESTURE_THRESHOLD = 30;
+const VELOCITY_THRESHOLD = 0.3;
 
-function App() {
-  const [isReady, setIsReady] = useState(false);
-  const [error, setError] = useState(null);
+// Utility Functions
+const formatTime = (seconds) => {
+  if (!seconds || isNaN(seconds)) return '0:00';
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+};
 
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const isSetup = await setupPlayer();
-        if (isSetup) {
-          const queue = await TrackPlayer.getQueue();
-          if (queue.length === 0) await addTracks();
-        }
-        setIsReady(true);
-      } catch (err) {
-        console.error('Error initializing player:', err);
-        setError('Error al inicializar el reproductor');
-        setIsReady(true);
-      }
-    };
-    init();
-  }, []);
-
-  if (!isReady) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FFD700" />
-        <Text style={styles.loadingText}>Cargando...</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (error) {
-    return (
-      <SafeAreaView style={styles.errorContainer}>
-        <Icon name="exclamation-triangle" size={50} color="#f74716" />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => { setError(null); setIsReady(false); }}
-        >
-          <Text style={styles.retryButtonText}>Reintentar</Text>
-        </TouchableOpacity>
-      </SafeAreaView>
-    );
-  }
-
-  return (
-    <>
-      <StatusBar backgroundColor="#1C1C1E" barStyle="light-content" />
-      <SafeAreaView style={styles.appContainer}>
-        <Playlist />
-      </SafeAreaView>
-    </>
-  );
-}
-
-function Playlist() {
-  const [queue, setQueue] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [currentTrackInfo, setCurrentTrackInfo] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
+// Custom Hooks
+const usePlayerGesture = (playerPosition, onExpandedChange) => {
+  const gestureStartPosition = useRef(EXPANDED_HEIGHT - COLLAPSED_HEIGHT);
   const [isDragging, setIsDragging] = useState(false);
 
-  const playerState = usePlaybackState();
-  const progress = useProgress();
-
-  // Animated value for the player's position
-  const initialY = expandedHeight - collapsedHeight;
-  const playerPosition = useRef(new Animated.Value(initialY)).current;
-  const gestureStartPosition = useRef(initialY);
-  const lastGesturePosition = useRef(initialY);
-
-  // Función para animar suavemente a una posición específica
-  const animateToPosition = useCallback((toValue, velocity = 0, callback = null) => {
-    const springConfig = {
+  const animateToPosition = useCallback((toValue, velocity = 0, callback) => {
+    Animated.spring(playerPosition, {
       toValue,
       useNativeDriver: false,
       tension: 300,
       friction: 30,
-      velocity: velocity * 2, // Amplifica la velocidad para mejor continuidad
-    };
-
-    Animated.spring(playerPosition, springConfig).start(callback);
+      velocity: velocity * 2,
+    }).start(callback);
   }, [playerPosition]);
 
-  // Función para determinar si debe expandirse o colapsarse
   const shouldExpand = useCallback((currentValue, velocity, distance) => {
-    const midPoint = (expandedHeight - collapsedHeight) / 2;
-    const minSwipeDistance = 30; // Distancia mínima para considerar el gesto
-    const velocityThreshold = 0.3; // Umbral de velocidad más bajo para mejor respuesta
-
-    // Si hay velocidad significativa, usarla como criterio principal
-    if (Math.abs(velocity) > velocityThreshold) {
-      return velocity < 0; // velocidad negativa = hacia arriba = expandir
+    const midPoint = (EXPANDED_HEIGHT - COLLAPSED_HEIGHT) / 2;
+    
+    if (Math.abs(velocity) > VELOCITY_THRESHOLD) {
+      return velocity < 0;
     }
-
-    // Si hay distancia significativa, usarla como criterio
-    if (Math.abs(distance) > minSwipeDistance) {
-      return distance < 0; // distancia negativa = hacia arriba = expandir
+    
+    if (Math.abs(distance) > GESTURE_THRESHOLD) {
+      return distance < 0;
     }
-
-    // Si no hay gesto significativo, usar la posición actual
+    
     return currentValue < midPoint;
   }, []);
 
-  // PanResponder mejorado para gestos más naturales
   const panResponder = PanResponder.create({
     onMoveShouldSetPanResponder: (_, gestureState) => {
-      // Responde más rápido a movimientos verticales
       const isVertical = Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
       const hasMinMovement = Math.abs(gestureState.dy) > 5;
       return isVertical && hasMinMovement;
     },
     
-    onPanResponderGrant: (_, gestureState) => {
-      // Detiene cualquier animación en curso
+    onPanResponderGrant: () => {
       playerPosition.stopAnimation();
-      
-      // Guarda la posición inicial del gesto
       gestureStartPosition.current = playerPosition._value;
-      lastGesturePosition.current = playerPosition._value;
-      
       setIsDragging(true);
     },
     
     onPanResponderMove: (_, gestureState) => {
-      // Calcula la nueva posición basada en el gesto
       const newPosition = gestureStartPosition.current + gestureState.dy;
-      
-      // Aplica límites con efecto de rebote suave
       const minPosition = 0;
-      const maxPosition = expandedHeight - collapsedHeight;
+      const maxPosition = EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
       
-      let boundedPosition;
+      let boundedPosition = Math.max(minPosition, Math.min(maxPosition, newPosition));
       
+      // Bounce effect
       if (newPosition < minPosition) {
-        // Efecto de rebote en el límite superior (expandido)
-        const overshoot = Math.abs(newPosition - minPosition);
-        const dampedOvershoot = overshoot * 0.3; // Reduce el overshoot
-        boundedPosition = minPosition - dampedOvershoot;
+        boundedPosition = minPosition - (minPosition - newPosition) * 0.3;
       } else if (newPosition > maxPosition) {
-        // Efecto de rebote en el límite inferior (colapsado)
-        const overshoot = newPosition - maxPosition;
-        const dampedOvershoot = overshoot * 0.3; // Reduce el overshoot
-        boundedPosition = maxPosition + dampedOvershoot;
-      } else {
-        boundedPosition = newPosition;
+        boundedPosition = maxPosition + (newPosition - maxPosition) * 0.3;
       }
       
-      // Aplica la nueva posición con interpolación suave
-      const smoothingFactor = 0.9;
-      const smoothedPosition = lastGesturePosition.current * (1 - smoothingFactor) + 
-                               boundedPosition * smoothingFactor;
-      
-      playerPosition.setValue(smoothedPosition);
-      lastGesturePosition.current = smoothedPosition;
+      playerPosition.setValue(boundedPosition);
     },
     
     onPanResponderRelease: (_, gestureState) => {
       setIsDragging(false);
       
       const currentValue = playerPosition._value;
-      const velocity = gestureState.vy;
-      const distance = gestureState.dy;
+      const expand = shouldExpand(currentValue, gestureState.vy, gestureState.dy);
+      const targetPosition = expand ? 0 : EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
       
-      // Determina el destino basado en la lógica mejorada
-      const expand = shouldExpand(currentValue, velocity, distance);
-      const targetPosition = expand ? 0 : expandedHeight - collapsedHeight;
-      
-      // Anima hacia el destino con la velocidad del gesto
-      animateToPosition(targetPosition, velocity, () => {
-        setIsPlayerExpanded(expand);
-      });
-    },
-    
-    onPanResponderTerminate: () => {
-      // Maneja la terminación inesperada del gesto
-      setIsDragging(false);
-      const currentValue = playerPosition._value;
-      const midPoint = (expandedHeight - collapsedHeight) / 2;
-      const targetPosition = currentValue < midPoint ? 0 : expandedHeight - collapsedHeight;
-      
-      animateToPosition(targetPosition, 0, () => {
-        setIsPlayerExpanded(currentValue < midPoint);
+      animateToPosition(targetPosition, gestureState.vy, () => {
+        onExpandedChange(expand);
       });
     },
   });
 
-  const filteredQueue = useMemo(() => {
-    if (!searchQuery.trim()) return queue;
-    const query = searchQuery.toLowerCase();
-    return queue.filter(
-      (track) =>
-        track.title?.toLowerCase().includes(query) ||
-        track.artist?.toLowerCase().includes(query)
-    );
-  }, [queue, searchQuery]);
+  return { panResponder, isDragging, animateToPosition };
+};
+
+const usePlaylist = () => {
+  const [queue, setQueue] = useState([]);
+  const [currentTrackInfo, setCurrentTrackInfo] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const loadPlaylist = useCallback(async () => {
     try {
@@ -258,156 +150,26 @@ function Playlist() {
     }
   });
 
-  const handleSearch = useCallback((text) => setSearchQuery(text), []);
-
-  const togglePlayback = useCallback(async () => {
-    const state = await TrackPlayer.getState();
-    if (state === State.Playing) {
-      await TrackPlayer.pause();
-    } else {
-      await TrackPlayer.play();
-    }
-  }, []);
-
-  const handleTrackSelect = useCallback(async (id) => {
-    const index = queue.findIndex((track) => track.id === id);
-    if (index !== -1) {
-      await TrackPlayer.skip(index);
-    }
-  }, [queue]);
-
-  const collapsePlayer = useCallback(() => {
-    animateToPosition(expandedHeight - collapsedHeight, 0, () => {
-      setIsPlayerExpanded(false);
-    });
-  }, [animateToPosition]);
-
-  const renderItem = useCallback(({ item }) => (
-    <PlaylistItem
-      item={item}
-      isCurrent={currentTrackInfo?.id === item.id}
-      onPress={() => handleTrackSelect(item.id)}
-      isPlaying={playerState === State.Playing}
-    />
-  ), [currentTrackInfo?.id, handleTrackSelect, playerState]);
-
-  const getItemLayout = useCallback((data, index) => ({
-    length: 76,
-    offset: 76 * index,
-    index
-  }), []);
-
-  if (isLoading) {
-    return (
-      <LinearGradient colors={['#363a42', '#091117']} style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#FFD700" />
-          <Text style={styles.loadingText}>Cargando música...</Text>
-        </View>
-      </LinearGradient>
-    );
-  }
-
-  // Interpolaciones mejoradas para transiciones más suaves
-  const listOpacity = playerPosition.interpolate({
-    inputRange: [0, (expandedHeight - collapsedHeight) * 0.3],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
-
-  const collapsedOpacity = playerPosition.interpolate({
-    inputRange: [
-      (expandedHeight - collapsedHeight) * 0.4,
-      expandedHeight - collapsedHeight
-    ],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
-
-  const expandedOpacity = playerPosition.interpolate({
-    inputRange: [0, (expandedHeight - collapsedHeight) * 0.4],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-
-  // Escala sutil para el botón de play durante el arrastre
-  const playButtonScale = playerPosition.interpolate({
-    inputRange: [0, expandedHeight - collapsedHeight],
-    outputRange: [1, 0.95],
-    extrapolate: 'clamp',
-  });
-
-  return (
-    <LinearGradient colors={['#363a42', '#091117']} style={styles.container}>
-      <Header searchQuery={searchQuery} onSearch={handleSearch} />
-
-      <Animated.View style={[styles.mainContentList, { opacity: listOpacity }]}>
-        <FlatList
-          data={filteredQueue}
-          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
-          showsVerticalScrollIndicator={false}
-          renderItem={renderItem}
-          ListEmptyComponent={<EmptyState searchQuery={searchQuery} />}
-          initialNumToRender={10}
-          getItemLayout={getItemLayout}
-          scrollEnabled={!isDragging} // Desactiva el scroll durante el arrastre
-        />
-      </Animated.View>
-
-      <Animated.View
-        style={[
-          styles.bottomControls,
-          {
-            transform: [{ translateY: playerPosition }],
-          }
-        ]}
-        {...panResponder.panHandlers}
-      >
-        <Animated.View style={[styles.expandedView, { opacity: expandedOpacity }]}>
-          <ExpandedPlayer
-            track={currentTrackInfo}
-            progress={progress}
-            onCollapse={collapsePlayer}
-            togglePlayback={togglePlayback}
-            playerState={playerState}
-          />
-        </Animated.View>
-
-        <Animated.View style={[styles.collapsedView, { opacity: collapsedOpacity }]}>
-          <NowPlayingCard track={currentTrackInfo} progress={progress} />
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.playButtonLarge,
-            {
-              transform: [{ scale: playButtonScale }]
-            }
-          ]}
-        >
-          <TouchableOpacity
-            style={styles.playButtonInner}
-            onPress={togglePlayback}
-            activeOpacity={0.8}
-          >
-            <Icon
-              name={playerState === State.Playing ? 'pause' : 'play'}
-              size={24}
-              color="#FFF"
-            />
-          </TouchableOpacity>
-        </Animated.View>
-      </Animated.View>
-    </LinearGradient>
-  );
-}
-
-const formatTime = (seconds) => {
-  if (!seconds || isNaN(seconds)) return '0:00';
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = Math.floor(seconds % 60);
-  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  return { queue, currentTrackInfo, isLoading };
 };
+
+// Components
+const LoadingScreen = memo(({ message = 'Cargando...' }) => (
+  <SafeAreaView style={styles.loadingContainer}>
+    <ActivityIndicator size="large" color="#FFD700" />
+    <Text style={styles.loadingText}>{message}</Text>
+  </SafeAreaView>
+));
+
+const ErrorScreen = memo(({ error, onRetry }) => (
+  <SafeAreaView style={styles.errorContainer}>
+    <Icon name="exclamation-triangle" size={50} color="#f74716" />
+    <Text style={styles.errorText}>{error}</Text>
+    <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
+      <Text style={styles.retryButtonText}>Reintentar</Text>
+    </TouchableOpacity>
+  </SafeAreaView>
+));
 
 const Header = memo(({ searchQuery, onSearch }) => (
   <View style={styles.header}>
@@ -425,8 +187,106 @@ const Header = memo(({ searchQuery, onSearch }) => (
   </View>
 ));
 
+const AnimatedSoundWave = memo(({ isPlaying }) => {
+  const bar1Height = useRef(new Animated.Value(12)).current;
+  const bar2Height = useRef(new Animated.Value(20)).current;
+  const bar3Height = useRef(new Animated.Value(16)).current;
+
+  useEffect(() => {
+    const createAnimation = (val, min, max) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(val, {
+            toValue: max,
+            duration: 300 + Math.random() * 200,
+            useNativeDriver: false
+          }),
+          Animated.timing(val, {
+            toValue: min,
+            duration: 300 + Math.random() * 200,
+            useNativeDriver: false
+          }),
+        ])
+      );
+
+    if (isPlaying) {
+      const animations = [
+        createAnimation(bar1Height, 8, 18),
+        createAnimation(bar2Height, 12, 24),
+        createAnimation(bar3Height, 10, 20)
+      ];
+
+      animations.forEach((anim, i) =>
+        setTimeout(() => anim.start(), i * 100)
+      );
+
+      return () => animations.forEach(anim => anim.stop());
+    } else {
+      [bar1Height, bar2Height, bar3Height].forEach((bar, i) =>
+        Animated.timing(bar, {
+          toValue: [12, 20, 16][i],
+          duration: 200,
+          useNativeDriver: false
+        }).start()
+      );
+    }
+  }, [isPlaying, bar1Height, bar2Height, bar3Height]);
+
+  return (
+    <View style={styles.soundWave}>
+      <Animated.View style={[styles.bar, { height: bar1Height }]} />
+      <Animated.View style={[styles.bar, { height: bar2Height }]} />
+      <Animated.View style={[styles.bar, { height: bar3Height }]} />
+    </View>
+  );
+});
+
+const PlaylistItem = memo(({ item, isCurrent, onPress, isPlaying }) => (
+  <TouchableOpacity
+    style={[styles.playlistItemContainer, isCurrent && styles.playlistItemActive]}
+    activeOpacity={0.7}
+    onPress={() => onPress(item.id)}
+  >
+    <View style={styles.albumArt}>
+      <Image
+        source={item.artwork}
+        style={styles.albumArtImage}
+        resizeMode="cover"
+      />
+    </View>
+    <View style={styles.trackInfo}>
+      <Text style={styles.trackTitle} numberOfLines={1}>
+        {item.title || 'Canción desconocida'}
+      </Text>
+      <Text style={styles.trackArtist} numberOfLines={1}>
+        {item.artist || 'Artista desconocido'}
+      </Text>
+    </View>
+    <View style={styles.currentTrackIndicator}>
+      {isCurrent ? (
+        <AnimatedSoundWave isPlaying={isPlaying} />
+      ) : (
+        <Text style={styles.trackDuration}>{formatTime(item.duration)}</Text>
+      )}
+    </View>
+  </TouchableOpacity>
+));
+
+const EmptyState = memo(({ searchQuery }) => (
+  <View style={styles.noResultsContainer}>
+    <Icon name="music" size={50} color="#666" />
+    <Text style={styles.noResultsText}>
+      {searchQuery ? 'No se encontraron resultados' : 'No hay música disponible'}
+    </Text>
+    <Text style={styles.noResultsSubtext}>
+      {searchQuery ? 'Intenta con otro término' : 'Agrega música a tu biblioteca'}
+    </Text>
+  </View>
+));
+
 const NowPlayingCard = memo(({ track, progress }) => {
   if (!track) return null;
+  
   return (
     <View style={styles.nowPlayingCard}>
       <View style={styles.nowPlayingAlbumImage}>
@@ -461,42 +321,9 @@ const NowPlayingCard = memo(({ track, progress }) => {
   );
 });
 
-const PlaylistItem = memo(({ item, isCurrent, onPress, isPlaying }) => (
-  <TouchableOpacity
-    style={isCurrent ? styles.playlistItemContainerActive : styles.playlistItemContainer}
-    activeOpacity={0.7}
-    onPress={() => onPress(item.id)}
-  >
-    <View style={styles.albumArt}>
-      <Image
-        source={item.artwork}
-        style={styles.albumArtImage}
-        resizeMode="cover"
-      />
-    </View>
-    <View style={styles.trackInfo}>
-      <Text style={styles.trackTitle} numberOfLines={1}>
-        {item.title || 'Canción desconocida'}
-      </Text>
-      <Text style={styles.trackArtist} numberOfLines={1}>
-        {item.artist || 'Artista desconocido'}
-      </Text>
-    </View>
-    {isCurrent && (
-      <View style={styles.currentTrackIndicator}>
-        <AnimatedSoundWave isPlaying={isPlaying} />
-      </View>
-    )}
-    {!isCurrent && (
-      <View style={styles.currentTrackIndicator}>
-        <Text style={styles.trackDuration}>{formatTime(item.duration)}</Text>
-      </View>
-    )}
-  </TouchableOpacity>
-));
-
 const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, playerState }) => {
   if (!track) return null;
+  
   return (
     <SafeAreaView style={styles.expandedContainer}>
       <TouchableOpacity onPress={onCollapse} style={styles.collapseButton}>
@@ -556,72 +383,213 @@ const ExpandedPlayer = memo(({ track, progress, onCollapse, togglePlayback, play
   );
 });
 
-const AnimatedSoundWave = memo(({ isPlaying }) => {
-  const bar1Height = useRef(new Animated.Value(12)).current;
-  const bar2Height = useRef(new Animated.Value(20)).current;
-  const bar3Height = useRef(new Animated.Value(16)).current;
+const Playlist = memo(() => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
+  
+  const { queue, currentTrackInfo, isLoading } = usePlaylist();
+  const playerState = usePlaybackState();
+  const progress = useProgress();
 
-  useEffect(() => {
-    const createAnimation = (val, min, max) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(val, {
-            toValue: max,
-            duration: 300 + Math.random() * 200,
-            useNativeDriver: false
-          }),
-          Animated.timing(val, {
-            toValue: min,
-            duration: 300 + Math.random() * 200,
-            useNativeDriver: false
-          }),
-        ])
-      );
+  const initialY = EXPANDED_HEIGHT - COLLAPSED_HEIGHT;
+  const playerPosition = useRef(new Animated.Value(initialY)).current;
+  
+  const { panResponder, isDragging, animateToPosition } = usePlayerGesture(
+    playerPosition,
+    setIsPlayerExpanded
+  );
 
-    if (isPlaying) {
-      const animations = [
-        createAnimation(bar1Height, 8, 18),
-        createAnimation(bar2Height, 12, 24),
-        createAnimation(bar3Height, 10, 20)
-      ];
+  const filteredQueue = useMemo(() => {
+    if (!searchQuery.trim()) return queue;
+    const query = searchQuery.toLowerCase();
+    return queue.filter(
+      (track) =>
+        track.title?.toLowerCase().includes(query) ||
+        track.artist?.toLowerCase().includes(query)
+    );
+  }, [queue, searchQuery]);
 
-      animations.forEach((anim, i) =>
-        setTimeout(() => anim.start(), i * 100)
-      );
-
-      return () => animations.forEach(anim => anim.stop());
+  const togglePlayback = useCallback(async () => {
+    const state = await TrackPlayer.getState();
+    if (state === State.Playing) {
+      await TrackPlayer.pause();
     } else {
-      [bar1Height, bar2Height, bar3Height].forEach((bar, i) =>
-        Animated.timing(bar, {
-          toValue: [12, 20, 16][i],
-          duration: 200,
-          useNativeDriver: false
-        }).start()
-      );
+      await TrackPlayer.play();
     }
-  }, [isPlaying, bar1Height, bar2Height, bar3Height]);
+  }, []);
+
+  const handleTrackSelect = useCallback(async (id) => {
+    const index = queue.findIndex((track) => track.id === id);
+    if (index !== -1) {
+      await TrackPlayer.skip(index);
+    }
+  }, [queue]);
+
+  const collapsePlayer = useCallback(() => {
+    animateToPosition(EXPANDED_HEIGHT - COLLAPSED_HEIGHT, 0, () => {
+      setIsPlayerExpanded(false);
+    });
+  }, [animateToPosition]);
+
+  const renderItem = useCallback(({ item }) => (
+    <PlaylistItem
+      item={item}
+      isCurrent={currentTrackInfo?.id === item.id}
+      onPress={handleTrackSelect}
+      isPlaying={playerState === State.Playing}
+    />
+  ), [currentTrackInfo?.id, handleTrackSelect, playerState]);
+
+  const getItemLayout = useCallback((data, index) => ({
+    length: 76,
+    offset: 76 * index,
+    index
+  }), []);
+
+  if (isLoading) {
+    return (
+      <LinearGradient colors={['#363a42', '#091117']} style={styles.container}>
+        <LoadingScreen message="Cargando música..." />
+      </LinearGradient>
+    );
+  }
+
+  // Interpolaciones para animaciones
+  const listOpacity = playerPosition.interpolate({
+    inputRange: [0, (EXPANDED_HEIGHT - COLLAPSED_HEIGHT) * 0.3],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const collapsedOpacity = playerPosition.interpolate({
+    inputRange: [
+      (EXPANDED_HEIGHT - COLLAPSED_HEIGHT) * 0.4,
+      EXPANDED_HEIGHT - COLLAPSED_HEIGHT
+    ],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const expandedOpacity = playerPosition.interpolate({
+    inputRange: [0, (EXPANDED_HEIGHT - COLLAPSED_HEIGHT) * 0.4],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  const playButtonScale = playerPosition.interpolate({
+    inputRange: [0, EXPANDED_HEIGHT - COLLAPSED_HEIGHT],
+    outputRange: [1, 0.95],
+    extrapolate: 'clamp',
+  });
 
   return (
-    <View style={styles.soundWave}>
-      <Animated.View style={[styles.bar, { height: bar1Height }]} />
-      <Animated.View style={[styles.bar, { height: bar2Height }]} />
-      <Animated.View style={[styles.bar, { height: bar3Height }]} />
-    </View>
+    <LinearGradient colors={['#363a42', '#091117']} style={styles.container}>
+      <Header searchQuery={searchQuery} onSearch={setSearchQuery} />
+
+      <Animated.View style={[styles.mainContentList, { opacity: listOpacity }]}>
+        <FlatList
+          data={filteredQueue}
+          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
+          showsVerticalScrollIndicator={false}
+          renderItem={renderItem}
+          ListEmptyComponent={<EmptyState searchQuery={searchQuery} />}
+          initialNumToRender={10}
+          getItemLayout={getItemLayout}
+          scrollEnabled={!isDragging}
+        />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.bottomControls,
+          { transform: [{ translateY: playerPosition }] }
+        ]}
+        {...panResponder.panHandlers}
+      >
+        <Animated.View style={[styles.expandedView, { opacity: expandedOpacity }]}>
+          <ExpandedPlayer
+            track={currentTrackInfo}
+            progress={progress}
+            onCollapse={collapsePlayer}
+            togglePlayback={togglePlayback}
+            playerState={playerState}
+          />
+        </Animated.View>
+
+        <Animated.View style={[styles.collapsedView, { opacity: collapsedOpacity }]}>
+          <NowPlayingCard track={currentTrackInfo} progress={progress} />
+        </Animated.View>
+
+        <Animated.View
+          style={[
+            styles.playButtonLarge,
+            { transform: [{ scale: playButtonScale }] }
+          ]}
+        >
+          <TouchableOpacity
+            style={styles.playButtonInner}
+            onPress={togglePlayback}
+            activeOpacity={0.8}
+          >
+            <Icon
+              name={playerState === State.Playing ? 'pause' : 'play'}
+              size={24}
+              color="#FFF"
+            />
+          </TouchableOpacity>
+        </Animated.View>
+      </Animated.View>
+    </LinearGradient>
   );
 });
 
-const EmptyState = memo(({ searchQuery }) => (
-  <View style={styles.noResultsContainer}>
-    <Icon name="music" size={50} color="#666" />
-    <Text style={styles.noResultsText}>
-      {searchQuery ? 'No se encontraron resultados' : 'No hay música disponible'}
-    </Text>
-    <Text style={styles.noResultsSubtext}>
-      {searchQuery ? 'Intenta con otro término' : 'Agrega música a tu biblioteca'}
-    </Text>
-  </View>
-));
+// Main App Component
+const App = memo(() => {
+  const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState(null);
 
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const isSetup = await setupPlayer();
+        if (isSetup) {
+          const queue = await TrackPlayer.getQueue();
+          if (queue.length === 0) await addTracks();
+        }
+        setIsReady(true);
+      } catch (err) {
+        console.error('Error initializing player:', err);
+        setError('Error al inicializar el reproductor');
+        setIsReady(true);
+      }
+    };
+    init();
+  }, []);
+
+  const handleRetry = useCallback(() => {
+    setError(null);
+    setIsReady(false);
+  }, []);
+
+  if (!isReady) {
+    return <LoadingScreen />;
+  }
+
+  if (error) {
+    return <ErrorScreen error={error} onRetry={handleRetry} />;
+  }
+
+  return (
+    <>
+      <StatusBar backgroundColor="#363a42" barStyle="light-content" />
+      <SafeAreaView style={styles.appContainer}>
+        <Playlist />
+      </SafeAreaView>
+    </>
+  );
+});
+
+// Styles
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
@@ -771,12 +739,8 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 10
   },
-  playlistItemContainerActive: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  playlistItemActive: {
     backgroundColor: '#00000030',
-    borderRadius: 10,
-    padding: 10
   },
   albumArt: {
     width: 46,
@@ -843,7 +807,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 40,
     borderTopRightRadius: 40,
     backgroundColor: '#fff',
-    height: expandedHeight,
+    height: EXPANDED_HEIGHT,
     bottom: 0,
     left: 0,
     right: 0,
@@ -874,7 +838,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   collapsedView: {
-    height: collapsedHeight,
+    height: COLLAPSED_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
   },
@@ -958,4 +922,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default memo(App);
+export default App;
